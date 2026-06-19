@@ -1,9 +1,11 @@
 # Chat Server Library
 
-![CI](https://github.com/your-username/chat-server-library/actions/workflows/ci.yml/badge.svg)
+<!-- After publishing to GitHub, add a live CI badge:
+![CI](https://github.com/<you>/<repo>/actions/workflows/ci.yml/badge.svg) -->
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Type-checked: mypy --strict](https://img.shields.io/badge/mypy-strict-blue)
 ![Lint: ruff](https://img.shields.io/badge/lint-ruff-purple)
+![Tests: pytest](https://img.shields.io/badge/tests-pytest-green)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 A reusable Python chat server library plus CLI server and CLI client using raw TCP sockets and JSON Lines framing.
@@ -14,6 +16,7 @@ This build implements the reliable threaded version first: one accept thread, on
 
 - [Quick Start](#quick-start)
 - [CLI](#cli)
+- [Exit Codes](#exit-codes)
 - [Concurrency Model](#concurrency-model)
 - [Lifecycle Of One Chat Message](#lifecycle-of-one-chat-message)
 - [Backpressure](#backpressure)
@@ -28,6 +31,13 @@ This build implements the reliable threaded version first: one accept thread, on
 python -m pip install -e ".[dev]"
 chatserver init-db --db chat.db
 chatserver serve --host 127.0.0.1 --port 9000 --db chat.db
+```
+
+The runtime has no third-party dependencies (standard library only). For a
+reproducible dev/test environment with the exact locked toolchain:
+
+```powershell
+python -m pip install -e . -r requirements-dev.txt
 ```
 
 In another terminal:
@@ -114,6 +124,19 @@ chatserver demo unsafe-shutdown
 The `unsafe-*` demos actually run the broken pattern (e.g. a lockless set
 mutated mid-iteration, a blocking broadcast, a leaked worker thread) and print
 the failure next to the safe behavior.
+
+## Exit Codes
+
+`chatserver` and `chatclient` use consistent, conventional exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success |
+| `1` | Runtime error (e.g. failed to bind the port, DB file not found, admin socket unreachable) |
+| `2` | Usage or configuration error (bad arguments, invalid config value, a live-only admin command run without `--port`) |
+| `130` | Interrupted by `Ctrl-C` / `SIGINT` |
+
+Both commands also support `--version`.
 
 ## Concurrency Model
 

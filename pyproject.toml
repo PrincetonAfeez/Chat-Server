@@ -28,10 +28,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "hypothesis>=6.0", "mypy>=1.8", "ruff>=0.6"]
 
-[project.urls]
-Homepage = "https://github.com/your-username/chat-server-library"
-Repository = "https://github.com/your-username/chat-server-library"
-Documentation = "https://github.com/your-username/chat-server-library/tree/main/docs"
+# Add [project.urls] (Homepage / Repository / Documentation) once published.
 
 [project.scripts]
 chatserver = "chatserver.cli.main:server_main"

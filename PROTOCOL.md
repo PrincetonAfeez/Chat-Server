@@ -171,7 +171,9 @@ the examples above. Clients should treat unknown fields as optional and ignore t
 - Room names must be 1-32 characters and use letters, numbers, underscore, or dash.
 - Message bodies must be 1-2000 characters and must not contain control
   characters (C0/C1, including ESC, newline, and tab) — this blocks terminal
-  escape-sequence injection into other users' clients.
+  escape-sequence injection into other users' clients. The whole frame must also
+  fit within `max_message_size` **bytes**, so for multibyte (non-ASCII) text the
+  effective body length can be smaller than 2000 characters.
 - Duplicate active nicknames are rejected.
 - A connection that never completes the `hello` handshake within
   `handshake_timeout` is dropped (anti-slowloris).

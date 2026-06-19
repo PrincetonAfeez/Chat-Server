@@ -1,6 +1,23 @@
 from __future__ import annotations
 
-from chatserver.cli.main import server_main
+import pytest
+
+from chatserver import __version__
+from chatserver.cli.main import client_main, server_main
+
+
+def test_server_version_flag(capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        server_main(["--version"])
+    assert exc.value.code == 0
+    assert __version__ in capsys.readouterr().out
+
+
+def test_client_version_flag(capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        client_main(["--version"])
+    assert exc.value.code == 0
+    assert __version__ in capsys.readouterr().out
 
 
 def test_init_db_and_admin_stats(tmp_path, capsys) -> None:

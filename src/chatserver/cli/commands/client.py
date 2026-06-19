@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 
+from chatserver import __version__
 from chatserver.network.client import ChatClient
 
 
 def client_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="chatclient")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     connect = sub.add_parser("connect", help="connect to a chat server")
     connect.add_argument("--host", default="127.0.0.1")

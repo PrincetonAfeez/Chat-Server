@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 
+from chatserver import __version__
 from chatserver.cli.commands import admin as admin_cmd
 from chatserver.cli.commands import client as client_cmd
 from chatserver.cli.commands import demo as demo_cmd
@@ -14,6 +15,7 @@ from chatserver.persistence.migrations import init_db
 
 def build_server_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="chatserver")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init-db", help="create or migrate the SQLite schema")

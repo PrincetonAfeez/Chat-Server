@@ -1,0 +1,26 @@
+# Locked development toolchain — exact pins for reproducible CI and local dev.
+#
+# The runtime has ZERO third-party dependencies (Python standard library only),
+# so this lock covers only the dev/test/lint/type toolchain.
+#
+#   python -m pip install -e . -r requirements-dev.txt
+#
+# Verified on CPython 3.14; the matrix in .github/workflows/ci.yml also runs
+# 3.11-3.13.
+
+# Direct dev dependencies (mirror pyproject [project.optional-dependencies].dev)
+hypothesis==6.155.1
+mypy==2.0.0
+pytest==9.0.3
+pytest-cov==7.0.0
+ruff==0.14.13
+
+# Transitive dependencies (pinned so a fresh install is reproducible)
+coverage==7.14.1
+iniconfig==2.3.0
+mypy_extensions==1.1.0
+packaging==26.2
+pluggy==1.6.0
+sortedcontainers==2.4.0
+tomli==2.4.1
+typing_extensions==4.15.0
