@@ -11,7 +11,7 @@ test-fast:
 	python -m pytest -m "not slow"
 
 cov:
-	python -m pytest --cov --cov-report=term-missing
+	python -m pytest --cov --cov-report=term-missing --cov-fail-under=65
 
 lint:
 	python -m ruff check src tests

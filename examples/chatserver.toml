@@ -26,10 +26,12 @@ db_backpressure_policy = "reject_chat"  # reject_chat | disconnect
 # --- heartbeats / idle ---
 heartbeat_interval = 20.0   # seconds between pings
 idle_timeout = 60.0         # evict silent clients after this many seconds
+handshake_timeout = 10.0    # evict peers that never complete hello (anti-slowloris)
 
 # --- history / cache ---
 history_limit = 50              # messages returned on join
 history_retention_count = 1000  # messages kept per room in SQLite
+event_retention_count = 10000   # audit events kept in SQLite
 room_cache_messages = 50        # messages cached in memory per room
 max_cached_rooms = 128          # LRU bound on cached rooms
 cache_ttl = 600.0               # seconds; 0 disables TTL eviction

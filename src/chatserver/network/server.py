@@ -17,8 +17,10 @@ from chatserver.observability.events import (
     CONNECT,
     DISCONNECT,
     DM_SENT,
+    HANDLER_ERROR,
     HANDSHAKE_REJECT,
     HANDSHAKE_SUCCESS,
+    HANDSHAKE_TIMEOUT_EVICT,
     IDLE_TIMEOUT_EVICT,
     JOIN,
     KICK,
@@ -188,11 +190,22 @@ class ChatServer:
         self.stats.set_gauge("active_rooms", 0)
 
     def handle_frame(self, session: ClientSession, frame: str) -> None:
-        """Validate one decoded frame, enforce handshake/rate limits, and dispatch it."""
+        """Validate one decoded frame and dispatch it.
+
+        A frame from an untrusted peer must never take down the connection: a
+        ProtocolError becomes a structured error, and any *unexpected* exception
+        (a deeply nested JSON bomb, a handler bug) is logged and answered with a
+        generic error instead of killing the reader loop.
+        """
         try:
             message = validate_client_message(frame, handshaken=session.state == ConnectionState.ACTIVE)
         except ProtocolError as exc:
             session.send_error(exc)
+            self.stats.incr("rejected_messages")
+            return
+        except Exception as exc:  # noqa: BLE001 - hostile input must not crash a reader
+            log_event(self.logger, HANDLER_ERROR, stage="validate", error=str(exc), session_id=session.session_id)
+            session.send_error(ProtocolError(ErrorCode.INVALID_MESSAGE, "Could not process frame"))
             self.stats.incr("rejected_messages")
             return
 
@@ -202,6 +215,24 @@ class ChatServer:
             )
             return
 
+        try:
+            self._handle_message(session, message)
+        except ProtocolError as exc:
+            session.send_error(exc)
+            self.stats.incr("rejected_messages")
+        except Exception as exc:  # noqa: BLE001 - a handler bug must not silently drop the client
+            log_event(
+                self.logger,
+                HANDLER_ERROR,
+                stage="dispatch",
+                msg_type=message.get("type"),
+                error=str(exc),
+                session_id=session.session_id,
+            )
+            session.send_error(ProtocolError(ErrorCode.INVALID_MESSAGE, "Internal error handling message"))
+            self.stats.incr("rejected_messages")
+
+    def _handle_message(self, session: ClientSession, message: dict[str, Any]) -> None:
         msg_type = message["type"]
         if msg_type == "hello":
             if session.state == ConnectionState.ACTIVE:
@@ -425,15 +456,23 @@ class ChatServer:
         with self.lock:
             sessions = list(self.sessions.values())
         for session in sessions:
-            if session.state != ConnectionState.ACTIVE:
-                continue
-            idle_for = now - max(session.last_seen, session.last_pong_at)
-            if idle_for >= self.config.idle_timeout:
-                self.stats.incr("idle_timeout_evictions")
-                self.stats.incr("evicted_clients")
-                self._note_eviction(session, ConnectionState.IDLE_TIMED_OUT.value)
-                log_event(self.logger, IDLE_TIMEOUT_EVICT, nick=session.nick, session_id=session.session_id)
-                session.close(ConnectionState.IDLE_TIMED_OUT)
+            if session.state == ConnectionState.ACTIVE:
+                idle_for = now - max(session.last_seen, session.last_pong_at)
+                if idle_for >= self.config.idle_timeout:
+                    self.stats.incr("idle_timeout_evictions")
+                    self.stats.incr("evicted_clients")
+                    self._note_eviction(session, ConnectionState.IDLE_TIMED_OUT.value)
+                    log_event(self.logger, IDLE_TIMEOUT_EVICT, nick=session.nick, session_id=session.session_id)
+                    session.close(ConnectionState.IDLE_TIMED_OUT)
+            elif session.state in (ConnectionState.CONNECTED, ConnectionState.HANDSHAKING):
+                # Anti-slowloris: a peer that connects but never completes the
+                # hello/welcome handshake must not hold a slot + threads forever.
+                if now - session.created_at >= self.config.handshake_timeout:
+                    self.stats.incr("handshake_timeouts")
+                    self.stats.incr("evicted_clients")
+                    self._note_eviction(session, ConnectionState.HANDSHAKE_TIMED_OUT.value)
+                    log_event(self.logger, HANDSHAKE_TIMEOUT_EVICT, session_id=session.session_id)
+                    session.close(ConnectionState.HANDSHAKE_TIMED_OUT)
 
     def evict_slow_client(self, session: ClientSession) -> None:
         if session.close_event.is_set():
@@ -527,6 +566,15 @@ class ChatServer:
             DbJob(
                 "prune_history",
                 {"keep_count": self.config.history_retention_count},
+                priority=1,
+            )
+        )
+        # The audit/events table also has bounded retention so it cannot grow
+        # without limit on a long-running server.
+        self.enqueue_db(
+            DbJob(
+                "prune_events",
+                {"keep_count": self.config.event_retention_count},
                 priority=1,
             )
         )

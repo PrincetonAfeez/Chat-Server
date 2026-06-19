@@ -169,8 +169,12 @@ the examples above. Clients should treat unknown fields as optional and ignore t
 - A client must send `hello` before any room, DM, history, or presence request.
 - Nicknames must be 2-32 characters, start with a letter, and use letters, numbers, underscore, or dash.
 - Room names must be 1-32 characters and use letters, numbers, underscore, or dash.
-- Message bodies must be 1-2000 characters.
+- Message bodies must be 1-2000 characters and must not contain control
+  characters (C0/C1, including ESC, newline, and tab) — this blocks terminal
+  escape-sequence injection into other users' clients.
 - Duplicate active nicknames are rejected.
+- A connection that never completes the `hello` handshake within
+  `handshake_timeout` is dropped (anti-slowloris).
 
 ## Error Codes
 

@@ -27,4 +27,4 @@ jobs:
       - name: Type check (mypy --strict)
         run: python -m mypy
       - name: Tests (with coverage)
-        run: python -m pytest --cov --cov-report=term-missing
+        run: python -m pytest --cov --cov-report=term-missing --cov-fail-under=65

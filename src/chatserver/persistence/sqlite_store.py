@@ -119,6 +119,13 @@ class SQLiteStore:
             (room, room, keep_count),
         )
 
+    def prune_events(self, conn: sqlite3.Connection, keep_count: int) -> None:
+        """Keep only the most recent ``keep_count`` audit events (by insert order)."""
+        conn.execute(
+            "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?)",
+            (keep_count,),
+        )
+
     def recent_room_messages(self, room: str, limit: int) -> list[dict[str, Any]]:
         conn = self.connect()
         try:

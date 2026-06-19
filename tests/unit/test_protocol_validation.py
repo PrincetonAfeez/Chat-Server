@@ -29,3 +29,24 @@ def test_unknown_message_type_is_stable_error() -> None:
     with pytest.raises(ProtocolError) as exc:
         validate_client_message('{"type":"dance"}', handshaken=True)
     assert exc.value.code == ErrorCode.UNKNOWN_COMMAND
+
+
+def test_rejects_control_characters_in_body() -> None:
+    #  is ESC — an ANSI terminal-escape lead-in that must not pass through.
+    with pytest.raises(ProtocolError) as exc:
+        validate_client_message(
+            '{"type":"chat","room":"general","body":"hi\\u001b[2Jthere"}',
+            handshaken=True,
+        )
+    assert exc.value.code == ErrorCode.INVALID_MESSAGE
+
+
+def test_rejects_newline_in_body() -> None:
+    with pytest.raises(ProtocolError) as exc:
+        validate_client_message('{"type":"chat","room":"general","body":"a\\nb"}', handshaken=True)
+    assert exc.value.code == ErrorCode.INVALID_MESSAGE
+
+
+def test_accepts_normal_unicode_body() -> None:
+    msg = validate_client_message('{"type":"chat","room":"general","body":"héllo 🌍"}', handshaken=True)
+    assert msg["body"] == "héllo 🌍"

@@ -173,6 +173,9 @@ class DbWriter:
         if job.job_type == "prune_history":
             self.store.prune_history(conn, payload["keep_count"], room=payload.get("room"))
             return
+        if job.job_type == "prune_events":
+            self.store.prune_events(conn, payload["keep_count"])
+            return
         if job.job_type == "store_system_event":
             self.store.record_event(
                 conn,

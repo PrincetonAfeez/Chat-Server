@@ -20,6 +20,10 @@ CLIENT_MESSAGE_TYPES = {
 
 ROOM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 NICK_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,31}$")
+# C0 controls (incl. ESC/newline/tab), DEL, and C1 controls. Blocking these
+# keeps a hostile body from carrying terminal escape sequences that would
+# hijack another user's terminal when their client prints the message.
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 MAX_BODY_CHARS = 2000
 
 
@@ -102,6 +106,11 @@ def validate_body(body: str) -> str:
         raise ProtocolError(
             ErrorCode.INVALID_MESSAGE,
             f"body must be 1-{MAX_BODY_CHARS} characters",
+        )
+    if CONTROL_RE.search(body):
+        raise ProtocolError(
+            ErrorCode.INVALID_MESSAGE,
+            "body must not contain control characters",
         )
     return body
 

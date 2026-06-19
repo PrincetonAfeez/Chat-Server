@@ -55,3 +55,19 @@ def test_prune_history_single_room(tmp_path) -> None:
     assert [m["body"] for m in store.recent_room_messages("general", 100)] == ["g4", "g5"]
     # The targeted prune must not touch the other room.
     assert len(store.recent_room_messages("random", 100)) == 6
+
+
+def test_prune_events_keeps_only_recent(tmp_path) -> None:
+    store = SQLiteStore(tmp_path / "chat.db")
+    store.initialize()
+    conn = store.connect()
+    try:
+        for i in range(10):
+            store.record_event(conn, "join", nick=f"u{i}", room="general")
+        conn.commit()
+        store.prune_events(conn, 3)
+        conn.commit()
+        remaining = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    finally:
+        conn.close()
+    assert remaining == 3

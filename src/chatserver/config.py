@@ -19,12 +19,19 @@ _POSITIVE_INTS = (
     "db_queue_size",
     "history_limit",
     "history_retention_count",
+    "event_retention_count",
     "room_cache_messages",
     "max_cached_rooms",
     "rate_limit_messages",
 )
 # Durations that must be strictly positive.
-_POSITIVE_FLOATS = ("heartbeat_interval", "idle_timeout", "rate_limit_window", "shutdown_timeout")
+_POSITIVE_FLOATS = (
+    "heartbeat_interval",
+    "idle_timeout",
+    "handshake_timeout",
+    "rate_limit_window",
+    "shutdown_timeout",
+)
 # Durations where 0 is a valid "disabled" sentinel.
 _NON_NEGATIVE_FLOATS = ("cache_ttl", "stats_interval")
 
@@ -43,8 +50,10 @@ class ServerConfig:
     db_backpressure_policy: str = "reject_chat"
     heartbeat_interval: float = 20.0
     idle_timeout: float = 60.0
+    handshake_timeout: float = 10.0
     history_limit: int = 50
     history_retention_count: int = 1000
+    event_retention_count: int = 10000
     room_cache_messages: int = 50
     max_cached_rooms: int = 128
     cache_ttl: float = 600.0

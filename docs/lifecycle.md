@@ -6,6 +6,7 @@ stateDiagram-v2
     CONNECTED --> HANDSHAKING: start()
     HANDSHAKING --> ACTIVE: hello/welcome
     HANDSHAKING --> REJECTED: nick_taken / server_full
+    HANDSHAKING --> HANDSHAKE_TIMED_OUT: no hello within handshake_timeout
     ACTIVE --> IDLE_TIMED_OUT: no pong within idle_timeout
     ACTIVE --> RATE_LIMITED: over rate limit
     ACTIVE --> SLOW_CLIENT_EVICTED: outbound queue overflow
@@ -14,6 +15,7 @@ stateDiagram-v2
     ACTIVE --> SOCKET_CLOSED: peer closed
     ACTIVE --> SERVER_SHUTDOWN: graceful shutdown
     REJECTED --> [*]
+    HANDSHAKE_TIMED_OUT --> [*]
     IDLE_TIMED_OUT --> [*]
     SLOW_CLIENT_EVICTED --> [*]
     DB_BACKLOG --> [*]
@@ -32,6 +34,7 @@ Failure and eviction states:
 
 ```text
 HANDSHAKING -> REJECTED
+HANDSHAKING -> HANDSHAKE_TIMED_OUT   (never sent hello within handshake_timeout)
 ACTIVE -> IDLE_TIMED_OUT
 ACTIVE -> RATE_LIMITED
 ACTIVE -> SLOW_CLIENT_EVICTED

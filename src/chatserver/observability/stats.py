@@ -24,6 +24,7 @@ class ServerStats:
     evicted_clients: int = 0
     slow_client_evictions: int = 0
     idle_timeout_evictions: int = 0
+    handshake_timeouts: int = 0
     rate_limit_rejections: int = 0
     db_write_successes: int = 0
     db_write_failures: int = 0
@@ -74,6 +75,7 @@ class ServerStats:
                 "evicted_clients": self.evicted_clients,
                 "slow_client_evictions": self.slow_client_evictions,
                 "idle_timeout_evictions": self.idle_timeout_evictions,
+                "handshake_timeouts": self.handshake_timeouts,
                 "rate_limit_rejections": self.rate_limit_rejections,
                 "db_write_successes": self.db_write_successes,
                 "db_write_failures": self.db_write_failures,
