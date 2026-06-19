@@ -1,0 +1,49 @@
+# Example chat server configuration.
+#
+#   chatserver serve --config examples/chatserver.toml
+#
+# Every key is optional and falls back to the built-in default shown here.
+# CLI flags (e.g. --port) override values from this file.
+
+[server]
+# --- network ---
+host = "127.0.0.1"          # bind address; localhost only by default
+port = 9000                 # 0 = pick an ephemeral port
+engine = "threaded"         # only "threaded" is implemented in this build
+
+# --- limits / framing ---
+max_connections = 100       # reject new clients beyond this
+max_message_size = 4096     # max client->server frame size (bytes)
+
+# --- outbound backpressure ---
+outbound_queue_size = 100               # per-client bounded send buffer
+outbound_backpressure_policy = "disconnect"  # disconnect | drop_oldest | drop_newest
+
+# --- DB writer backpressure ---
+db_queue_size = 1000                    # bounded DB writer queue
+db_backpressure_policy = "reject_chat"  # reject_chat | disconnect
+
+# --- heartbeats / idle ---
+heartbeat_interval = 20.0   # seconds between pings
+idle_timeout = 60.0         # evict silent clients after this many seconds
+
+# --- history / cache ---
+history_limit = 50              # messages returned on join
+history_retention_count = 1000  # messages kept per room in SQLite
+room_cache_messages = 50        # messages cached in memory per room
+max_cached_rooms = 128          # LRU bound on cached rooms
+cache_ttl = 600.0               # seconds; 0 disables TTL eviction
+
+# --- rate limiting ---
+rate_limit_messages = 20    # messages allowed per window
+rate_limit_window = 5.0     # window length in seconds
+
+# --- lifecycle / observability ---
+stats_interval = 30.0       # periodic stats log interval; 0 disables
+shutdown_timeout = 5.0      # per-worker join timeout on shutdown
+log_level = "INFO"
+
+# --- admin control socket (off by default) ---
+admin_enabled = false
+admin_host = "127.0.0.1"
+admin_port = 0
