@@ -1,3 +1,5 @@
+""" Session for the chat server library """
+
 from __future__ import annotations
 
 import contextlib
@@ -8,7 +10,7 @@ from threading import Event, RLock, Thread, current_thread
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from chatserver.protocol.errors import ProtocolError, error_frame
+from chatserver.protocol.errors import ErrorCode, ProtocolError, error_frame
 from chatserver.protocol.framing import FrameDecoder, encode_frame
 from chatserver.security.rate_limit import RateLimiter
 
@@ -26,15 +28,22 @@ OUTBOUND_POLL_TIMEOUT = 0.1
 
 
 class ConnectionState(StrEnum):
+    """Terminal disconnect reasons recorded in audit logs and diagnostics.
+
+    ``CLOSING``, ``CLOSED``, and ``RATE_LIMITED`` are reserved labels — rate
+    limiting sends a recoverable wire error while the session stays ``ACTIVE``.
+    """
+
     CONNECTED = "CONNECTED"
     HANDSHAKING = "HANDSHAKING"
     ACTIVE = "ACTIVE"
-    CLOSING = "CLOSING"
-    CLOSED = "CLOSED"
+    CLOSING = "CLOSING"  # reserved — not used as a persistent state
+    CLOSED = "CLOSED"  # reserved — not used as a persistent state
+    PROTOCOL_ERROR = "PROTOCOL_ERROR"
     REJECTED = "REJECTED"
     HANDSHAKE_TIMED_OUT = "HANDSHAKE_TIMED_OUT"
     IDLE_TIMED_OUT = "IDLE_TIMED_OUT"
-    RATE_LIMITED = "RATE_LIMITED"
+    RATE_LIMITED = "RATE_LIMITED"  # reserved — wire uses rate_limited error, state stays ACTIVE
     SLOW_CLIENT_EVICTED = "SLOW_CLIENT_EVICTED"
     DB_BACKLOG = "DB_BACKLOG"
     KICKED = "KICKED"
@@ -185,12 +194,16 @@ class ClientSession:
                                 details=error.details,
                             )
                         )
-                        close_reason = error.code.value
+                        close_reason = ConnectionState.PROTOCOL_ERROR
                         return
                     self.send_error(error)
                 for frame in frames:
+                    if self.close_event.is_set():
+                        break
                     self.server.handle_frame(self, frame)
         finally:
+            if self.server.stopping.is_set() and close_reason == ConnectionState.SOCKET_CLOSED:
+                close_reason = ConnectionState.SERVER_SHUTDOWN
             self.close(close_reason)
 
     def _writer_loop(self) -> None:
@@ -202,11 +215,25 @@ class ClientSession:
                     if self.close_event.is_set():
                         break
                     continue
+                # sendall can still block on a full TCP send buffer under
+                # drop_* policies; only the disconnect policy evicts slow peers.
                 try:
                     with self.send_lock:
                         self.sock.sendall(encode_frame(message))
                 except TimeoutError:
-                    self.server.evict_slow_client(self)
+                    policy = self.server.config.outbound_backpressure_policy
+                    if policy == "disconnect":
+                        self.server.evict_slow_client(self)
+                    else:
+                        self.server.stats.incr("dropped_messages")
+                        self.send_immediate(
+                            error_frame(
+                                ErrorCode.SLOW_CLIENT,
+                                "Outbound send timed out",
+                                recoverable=False,
+                            )
+                        )
+                        self.close(ConnectionState.SLOW_CLIENT_EVICTED)
                     break
                 except OSError:
                     break
