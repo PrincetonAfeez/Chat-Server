@@ -1,5 +1,5 @@
 # Concurrency Models
-
+ 
 The implemented model is thread-per-connection.
 
 Why this model:
