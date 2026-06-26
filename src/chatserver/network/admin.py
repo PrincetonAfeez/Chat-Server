@@ -1,3 +1,5 @@
+""" Admin server for the chat server library """
+
 from __future__ import annotations
 
 import contextlib
@@ -38,6 +40,8 @@ class AdminServer:
         return self.bound_host, self.bound_port
 
     def start(self) -> None:
+        if self.host not in {"127.0.0.1", "localhost"}:
+            raise OSError(f"admin socket must bind to localhost (got {self.host!r})")
         self._stop.clear()
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -48,13 +52,15 @@ class AdminServer:
         self._thread = Thread(target=self._accept_loop, name="chatserver-admin", daemon=False)
         self._thread.start()
 
-    def stop(self, timeout: float | None = 5.0) -> None:
+    def stop(self, timeout: float | None = 5.0) -> bool:
         self._stop.set()
         if self._sock:
             with contextlib.suppress(OSError):
                 self._sock.close()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout)
+            return not self._thread.is_alive()
+        return True
 
     def _accept_loop(self) -> None:
         assert self._sock is not None
@@ -75,7 +81,7 @@ class AdminServer:
 
     def _handle(self, conn: socket.socket) -> None:
         conn.settimeout(2.0)
-        decoder = FrameDecoder(65536)
+        decoder = FrameDecoder(max(self.server.config.max_message_size, 4096))
         request: dict[str, Any] | None = None
         while request is None:
             try:
