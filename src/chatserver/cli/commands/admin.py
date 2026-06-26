@@ -66,6 +66,7 @@ def admin(args: argparse.Namespace) -> int:
         _emit(store.db_stats(), args.format)
         return 0
     if args.admin_command == "rooms":
+        # Offline: durable room names + stored message counts (not live member counts).
         _emit(store.rooms(), args.format)
         return 0
     return 2
