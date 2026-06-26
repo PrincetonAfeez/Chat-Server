@@ -1,4 +1,4 @@
-.PHONY: install test test-fast lint format typecheck check demo all
+.PHONY: install test test-fast lint format format-check typecheck check demo all
 
 install:
 	python -m pip install -e ".[dev]"
@@ -19,11 +19,14 @@ lint:
 format:
 	python -m ruff format src tests
 
+format-check:
+	python -m ruff format --check src tests
+
 typecheck:
 	python -m mypy
 
-# Everything CI runs.
-check: lint typecheck test
+# Everything CI runs (includes coverage gate).
+check: lint format-check typecheck cov
 
 demo:
 	python -m chatserver.cli.main demo all || chatserver demo all
