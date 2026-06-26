@@ -1,4 +1,4 @@
-"""Demonstrates how a blocking broadcast lets one slow client stall the room."""
+"""Demonstrates how a blocking broadcast lets one slow client stall the room """
 
 from __future__ import annotations
 
