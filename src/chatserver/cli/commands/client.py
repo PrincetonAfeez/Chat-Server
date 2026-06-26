@@ -1,5 +1,5 @@
 """`chatclient connect` — the interactive CLI client entry point."""
-
+  
 from __future__ import annotations
 
 import argparse
