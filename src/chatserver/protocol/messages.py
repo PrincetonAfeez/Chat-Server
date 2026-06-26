@@ -1,4 +1,4 @@
-"""Server-to-client frame builders and id/timestamp helpers.
+"""Server-to-client frame builders and id/timestamp helpers 
 
 These builders are the single source of truth for the shape of every frame the
 server sends. The ``*Frame`` TypedDicts document the wire contract (see
