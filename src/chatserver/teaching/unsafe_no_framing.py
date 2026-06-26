@@ -1,4 +1,4 @@
-"""Demonstrates why 'one recv() == one message' is wrong on a TCP stream."""
+"""Demonstrates why 'one recv() == one message' is wrong on a TCP stream """
 
 from __future__ import annotations
 
