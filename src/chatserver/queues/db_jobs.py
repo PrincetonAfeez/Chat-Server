@@ -1,3 +1,5 @@
+""" DB jobs module for the chat server library """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
