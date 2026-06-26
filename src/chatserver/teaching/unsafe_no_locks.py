@@ -1,4 +1,4 @@
-"""Demonstrates registry corruption when threads share state without a lock.
+"""Demonstrates registry corruption when threads share state without a lock 
 
 This mirrors the real hazard in a chat server: one thread broadcasts by
 iterating a room's member set while another thread joins/leaves and mutates it.
