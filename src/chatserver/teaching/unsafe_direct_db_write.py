@@ -1,4 +1,4 @@
-"""Demonstrates how direct SQLite writes from handlers couple I/O to the network."""
+"""Demonstrates how direct SQLite writes from handlers couple I/O to the network """
 
 from __future__ import annotations
 
