@@ -1,3 +1,5 @@
+""" Errors module for the chat server library """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -18,6 +20,9 @@ class ErrorCode(StrEnum):
     USER_NOT_FOUND = "user_not_found"
     RATE_LIMITED = "rate_limited"
     SLOW_CLIENT = "slow_client"
+    IDLE_TIMED_OUT = "idle_timeout"
+    HANDSHAKE_TIMED_OUT = "handshake_timeout"
+    KICKED = "kicked"
     SERVER_SHUTTING_DOWN = "server_shutting_down"
     SERVER_BUSY = "server_busy"
     SERVER_FULL = "server_full"
