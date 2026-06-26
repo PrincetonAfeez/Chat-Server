@@ -1,5 +1,5 @@
 # Architecture
-
+ 
 The package separates protocol, network I/O, routing, persistence, caching, scheduling, security, observability, CLI, and teaching examples.
 
 ## Lifecycle of one chat message
