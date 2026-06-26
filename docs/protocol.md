@@ -1,10 +1,8 @@
-# Protocol
+# Protocol specification
 
-See [../PROTOCOL.md](../PROTOCOL.md) for the protocol contract.
+The canonical wire protocol is documented in the repository root:
 
-Implementation files:
+**[PROTOCOL.md](../PROTOCOL.md)**
 
-- `src/chatserver/protocol/framing.py`
-- `src/chatserver/protocol/validation.py`
-- `src/chatserver/protocol/errors.py`
-- `src/chatserver/protocol/messages.py`
+That file defines JSON Lines framing, message types, validation rules, and error
+codes. This stub exists so design-doc links under `docs/` resolve consistently.
