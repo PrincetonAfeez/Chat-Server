@@ -1,7 +1,6 @@
 # Chat Server Library
 
-<!-- After publishing to GitHub, add a live CI badge:
-![CI](https://github.com/<you>/<repo>/actions/workflows/ci.yml/badge.svg) -->
+![CI](https://github.com/prince/chat-server/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Type-checked: mypy --strict](https://img.shields.io/badge/mypy-strict-blue)
 ![Lint: ruff](https://img.shields.io/badge/lint-ruff-purple)
@@ -30,15 +29,18 @@ This build implements the reliable threaded version first: one accept thread, on
 ```powershell
 python -m pip install -e ".[dev]"
 chatserver init-db --db chat.db
+chatserver serve --config examples/chatserver.toml
+```
+
+JSON config is also supported (`examples/chatserver.json`). An equivalent pinned lockfile install is `python -m pip install -e . -r requirements-dev.txt`.
+
+Or pass flags directly (CLI flags override config file values):
+
+```powershell
 chatserver serve --host 127.0.0.1 --port 9000 --db chat.db
 ```
 
-The runtime has no third-party dependencies (standard library only). For a
-reproducible dev/test environment with the exact locked toolchain:
-
-```powershell
-python -m pip install -e . -r requirements-dev.txt
-```
+See [examples/chatserver.toml](examples/chatserver.toml) for every tunable setting.
 
 In another terminal:
 
@@ -52,10 +54,12 @@ Client commands:
 /join general
 /rooms
 /who general
+/presence general
 /msg ada hello
 /history general 25
 /leave general
 /nick newname
+/help
 /quit
 ```
 
@@ -79,18 +83,28 @@ chatserver serve `
   --db-queue-size 1000
 ```
 
-Live admin (enable the localhost control socket with `--admin-port`, then query it):
+Configuration file (TOML or JSON; optional `[server]` section). CLI flags override file values:
+
+```powershell
+chatserver serve --config examples/chatserver.toml
+```
+
+Live admin (enable the localhost control socket with `--admin-port`, then query it). Use `--format table` for aligned text output instead of JSON:
 
 ```powershell
 chatserver serve --db chat.db --admin-port 9001
 chatserver admin stats     --port 9001
+chatserver admin stats     --port 9001 --format table
 chatserver admin clients   --port 9001
 chatserver admin queues    --port 9001
 chatserver admin cache     --port 9001
 chatserver admin evictions --port 9001
 chatserver admin kick      --nick ada --port 9001
 chatserver admin broadcast --message "restart in 5 minutes" --port 9001
+chatserver admin rooms     --port 9001
 ```
+
+Live `admin rooms --port` returns a JSON object mapping room name to **live member count** (e.g. `{"general": 2}`). Offline `admin rooms --db` returns a JSON **list** of `{room, message_count}` from SQLite.
 
 Without `--port`, `admin stats` and `admin rooms` fall back to reading durable
 counts straight from the DB file:
@@ -108,6 +122,7 @@ Teaching / feature demos (each spins up an ephemeral server and tears it down):
 ```powershell
 chatserver demo framing
 chatserver demo basic
+chatserver demo multi-client
 chatserver demo slow-client
 chatserver demo rate-limit
 chatserver demo idle-timeout
@@ -123,7 +138,10 @@ chatserver demo unsafe-shutdown
 
 The `unsafe-*` demos actually run the broken pattern (e.g. a lockless set
 mutated mid-iteration, a blocking broadcast, a leaked worker thread) and print
-the failure next to the safe behavior.
+the failure next to the safe behavior. They use simplified models (queues and
+temp files rather than full socket/DB blocking). `demo unsafe-room-race`
+(`unsafe_no_locks`) temporarily changes the process-global GIL switch interval
+— do not run unsafe demos in parallel in the same process.
 
 ## Exit Codes
 
@@ -206,27 +224,42 @@ SQLite writes also use a bounded queue. `db_backpressure_policy` is `reject_chat
 
 SQLite is the default backend. All persistent writes go through one `DbWriter` thread:
 
-- `store_message`
-- `upsert_user`
-- `create_room`
-- `record_join`
-- `record_leave`
-- `record_disconnect`
-- `record_eviction`
-- `prune_history`
-- `store_system_event`
+- `store_message` — room chat messages
+- `persist_system_message` — join/leave/rename system notices + audit row (atomic)
+- `upsert_user`, `create_room`, `record_join`, `record_leave`, `record_disconnect`, `record_eviction`
+- `prune_history`, `prune_events`
+
+Offline `admin rooms --db` reports stored **message counts** per room; live `admin rooms --port` reports **member counts**.
 
 Room history reads are allowed from SQLite and are used to warm the cache on cache miss. Direct messages are best-effort live delivery only and are not persisted (the durable record is room history).
 
 ## Tests
 
+The suite contains **150+ tests** (`python -m pytest --collect-only -q` for the current count).
+
 ```powershell
 python -m pytest
+python -m pytest -m "not slow"   # fast unit suite (~75 tests)
+make cov                         # enforces 65% line coverage (see Makefile)
+make check                       # lint + format-check + typecheck + cov (matches CI gate)
 ```
+
+On Windows, the full slow socket suite may pass but leave pytest hanging at process exit (non-daemon server threads). Use `pytest -m "not slow"` for a reliable local loop, or rely on CI (Ubuntu) for the full gate. A 120s per-test timeout is enabled via `pytest-timeout`.
+
+| Directory | What it proves |
+| --- | --- |
+| `tests/unit/` | Framing, protocol validation, config parsing, rate limiter, cache bounds |
+| `tests/integration/` | Multi-client chat, DMs, rename, rooms, DB backpressure over sockets |
+| `tests/lifecycle/` | Handshake, idle timeout, graceful shutdown, scheduler heartbeats |
+| `tests/concurrency/` | Slow-client eviction, `drop_oldest` / `drop_newest` outbound policies |
+| `tests/persistence/` | DB writer queue, serialization, backpressure |
+| `tests/admin/` | Admin control socket commands |
+| `tests/cli/` | CLI smoke paths |
+| `tests/teaching/` | Unsafe demo failure modes |
 
 The suite covers framing, protocol validation, config validation, rate limiting
 (unit and end-to-end over a socket), the bounded outbound queue and its
-`drop_oldest` policy, cache bounds, **cache + scheduler concurrency safety**,
+`drop_oldest` / `drop_newest` policies, cache bounds, **cache + scheduler concurrency safety**,
 multi-client chat, rooms, DMs, history, cache **warmup-from-SQLite**, handshake
 rejection, max connections, idle eviction with an injected clock, **disconnect
 cleanup**, **history pruning**, the admin control socket, graceful shutdown
@@ -236,4 +269,8 @@ actually reproduced).
 
 ## Security Note
 
-The default bind address is `127.0.0.1`. Exposing this server publicly would require authentication, TLS, abuse controls, stronger authorization, and additional protocol hardening.
+The default bind address is `127.0.0.1`. On startup, `chatserver serve` prints a reminder that public exposure needs auth and TLS.
+
+`who` and `presence` list room members without requiring the requester to have joined that room (intentional for this teaching build). Low-priority DB audit jobs (`record_join`, etc.) are best-effort under queue pressure — see `db_jobs_dropped` in live admin stats.
+
+The CLI client sends frames up to 4096 bytes by default; the server `max_message_size` is configurable and may differ.
