@@ -1,7 +1,7 @@
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 PRAGMA user_version = 1;
-
+ 
 CREATE TABLE IF NOT EXISTS users (
     nick TEXT PRIMARY KEY,
     first_seen TEXT NOT NULL,
