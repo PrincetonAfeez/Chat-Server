@@ -1,3 +1,5 @@
+""" Threaded engine for the chat server library """
+
 from __future__ import annotations
 
 from chatserver.config import ServerConfig
