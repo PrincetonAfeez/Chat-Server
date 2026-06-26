@@ -1,5 +1,8 @@
+""" Events module for the chat server library """
+
 SERVER_START = "server_start"
 SERVER_SHUTDOWN = "server_shutdown"
+SHUTDOWN_JOIN_TIMEOUT = "shutdown_join_timeout"
 CONNECT = "connect"
 HANDSHAKE_SUCCESS = "handshake_success"
 HANDSHAKE_REJECT = "handshake_reject"
