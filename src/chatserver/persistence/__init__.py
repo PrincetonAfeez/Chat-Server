@@ -1,3 +1,5 @@
+""" Persistence module for the chat server library """
+
 from .migrations import init_db
 from .sqlite_store import SQLiteStore
 from .writer import DbWriter
