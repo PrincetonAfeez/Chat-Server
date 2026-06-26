@@ -12,6 +12,7 @@ from chatserver.config import (
 )
 from chatserver.engines import create_engine
 from chatserver.network.shutdown import install_signal_handlers
+from chatserver.observability.logging import configure_logging
 
 
 def add_serve_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -29,8 +30,10 @@ def add_serve_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -
     serve.add_argument("--db-backpressure-policy", choices=sorted(DB_BACKPRESSURE_POLICIES))
     serve.add_argument("--heartbeat-interval", type=float)
     serve.add_argument("--idle-timeout", type=float)
+    serve.add_argument("--handshake-timeout", type=float)
     serve.add_argument("--history-limit", type=int)
     serve.add_argument("--history-retention-count", type=int)
+    serve.add_argument("--event-retention-count", type=int)
     serve.add_argument("--room-cache-messages", type=int)
     serve.add_argument("--max-cached-rooms", type=int)
     serve.add_argument("--cache-ttl", type=float)
@@ -40,6 +43,7 @@ def add_serve_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -
     serve.add_argument("--shutdown-timeout", type=float)
     serve.add_argument("--admin-host")
     serve.add_argument("--admin-port", type=int, help="enable the localhost admin control socket on this port")
+    serve.add_argument("--admin-enabled", action=argparse.BooleanOptionalAction, default=None)
     serve.add_argument("--log-level")
 
 
@@ -58,8 +62,10 @@ def _config_from_args(args: argparse.Namespace) -> ServerConfig:
         "db_backpressure_policy": args.db_backpressure_policy,
         "heartbeat_interval": args.heartbeat_interval,
         "idle_timeout": args.idle_timeout,
+        "handshake_timeout": args.handshake_timeout,
         "history_limit": args.history_limit,
         "history_retention_count": args.history_retention_count,
+        "event_retention_count": args.event_retention_count,
         "room_cache_messages": args.room_cache_messages,
         "max_cached_rooms": args.max_cached_rooms,
         "cache_ttl": args.cache_ttl,
@@ -68,10 +74,11 @@ def _config_from_args(args: argparse.Namespace) -> ServerConfig:
         "stats_interval": args.stats_interval,
         "shutdown_timeout": args.shutdown_timeout,
         "admin_host": args.admin_host,
+        "admin_enabled": args.admin_enabled,
         "log_level": args.log_level,
     }
     if args.admin_port is not None:
-        overrides["admin_enabled"] = True
+        overrides["admin_enabled"] = True if overrides["admin_enabled"] is None else overrides["admin_enabled"]
         overrides["admin_port"] = args.admin_port
     return config.merged(overrides)
 
@@ -79,6 +86,9 @@ def _config_from_args(args: argparse.Namespace) -> ServerConfig:
 def serve(args: argparse.Namespace) -> int:
     try:
         config = _config_from_args(args)
+    except FileNotFoundError as exc:
+        print(f"config error: file not found: {exc}", file=sys.stderr)
+        return 2
     except ValueError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
@@ -86,6 +96,7 @@ def serve(args: argparse.Namespace) -> int:
         print("only the threaded engine is implemented in this build", file=sys.stderr)
         return 2
 
+    configure_logging(config.log_level)
     print("warning: localhost binding is intended for learning; public exposure needs auth and TLS")
     engine = create_engine(config)
     install_signal_handlers(engine.stop)
