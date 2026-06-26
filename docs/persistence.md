@@ -20,7 +20,9 @@ within a band); transient `sqlite3.OperationalError`s are retried up to three
 times, while permanent errors are logged to a bounded failures ring and dropped.
 
 History reads use `SQLiteStore.recent_room_messages()` and warm `HistoryCache` on
-cache misses. The cache is not durable truth.
+cache misses. The cache is not durable truth. A successful `prune_history` job
+invalidates the in-memory cache so `/history` cannot serve rows SQLite has already
+dropped.
 
 Retention is enforced by a single scheduled `prune_history` job that keeps the
 most recent `history_retention_count` messages **per room across every room in
