@@ -16,7 +16,10 @@ This first implementation is protocol version `0.1`. The frame format is stable:
 
 ### `hello`
 
-Starts the handshake or renames an active user.
+Starts the handshake or renames an active user. On an **already-active** session,
+a second `hello` with a new nick performs a rename (rate-limited like other
+post-handshake messages). The server responds with another `welcome` frame and
+broadcasts a rename system notice to every room the user is in.
 
 ```json
 {"type":"hello","nick":"princeton"}
@@ -27,6 +30,12 @@ Starts the handshake or renames an active user.
 ```json
 {"type":"join","room":"general"}
 ```
+
+After a successful join the server automatically sends a `history` frame for
+that room (up to `history_limit` messages) before the join system notice.
+
+A duplicate join (already in the room) returns a system notice
+`already in {room}` and does not re-broadcast a join event.
 
 ### `leave`
 
@@ -56,6 +65,25 @@ they are not returned by `history`. The recipient must be connected.
 ```json
 {"type":"history","room":"general","limit":25}
 ```
+
+The client must already be in the target room. When `room` is omitted on the
+**wire**, the default is `"general"`. The CLI client (`chatclient`) defaults to
+the user's **current room** instead — see client `/help`.
+
+`limit` must be an integer from 1 to 200; the server clamps the effective limit
+to `history_limit` from config (default 50).
+
+### `presence`
+
+Alias for `who` — lists connected users globally or in a room. The server
+responds with a `who` frame (same shape as the `who` command). Membership in
+the target room is **not** required (teaching build).
+
+```json
+{"type":"presence","room":"general"}
+```
+
+The `room` field is optional.
 
 ### `who`
 
@@ -191,7 +219,12 @@ the examples above. Clients should treat unknown fields as optional and ignore t
 - `room_not_found`
 - `user_not_found`
 - `rate_limited`
-- `slow_client`
+- `idle_timeout` — sent before disconnect when the session exceeds `idle_timeout`
+- `handshake_timeout` — sent before disconnect when hello is not completed in time
+- `kicked` — admin forcibly disconnected the session
+- `slow_client` — sent immediately before disconnect when outbound backpressure
+  triggers eviction: queue overflow under `disconnect`, or a send timeout under
+  `drop_oldest` / `drop_newest`
 - `server_shutting_down`
 - `server_busy`
 - `server_full`
