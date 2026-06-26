@@ -1,3 +1,5 @@
+""" Server for the chat server library """
+
 from __future__ import annotations
 
 import contextlib
@@ -30,6 +32,7 @@ from chatserver.observability.events import (
     RATE_LIMIT_REJECT,
     SERVER_SHUTDOWN,
     SERVER_START,
+    SHUTDOWN_JOIN_TIMEOUT,
     SLOW_CLIENT_EVICT,
     STATS_REPORT,
 )
@@ -82,18 +85,27 @@ class ChatServer:
         self.clock = clock
         self.stats = ServerStats()
         self.store = SQLiteStore(self.config.db_path)
-        self.db_writer = DbWriter(self.store, maxsize=self.config.db_queue_size, stats=self.stats)
+        self.db_writer = DbWriter(
+            self.store,
+            maxsize=self.config.db_queue_size,
+            stats=self.stats,
+            on_job_failure=self._on_db_job_failure,
+            on_job_success=self._on_db_job_success,
+        )
         self.history_cache = HistoryCache(
             max_rooms=self.config.max_cached_rooms,
-            messages_per_room=self.config.room_cache_messages,
+            messages_per_room=max(self.config.room_cache_messages, self.config.history_limit),
             ttl_seconds=self.config.cache_ttl,
             clock=self.clock,
+            on_evict=lambda count: self.stats.incr("cache_evictions", count),
         )
         self.rooms = RoomDirectory()
         self.sessions: dict[str, ClientSession] = {}
         self.nicks: dict[str, ClientSession] = {}
         self.lock = RLock()
         self.stopping = Event()
+        self._stop_lock = RLock()
+        self._stop_complete = Event()
         self.ready = Event()
         self._server_socket: socket.socket | None = None
         self._accept_thread: Thread | None = None
@@ -122,6 +134,7 @@ class ChatServer:
         if self._accept_thread and self._accept_thread.is_alive():
             return
         self.stopping.clear()
+        self._stop_complete.clear()
         self.db_writer.start()
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -129,6 +142,7 @@ class ChatServer:
         self._server_socket.listen()
         self._server_socket.settimeout(0.5)
         self.bound_host, self.bound_port = self._server_socket.getsockname()[:2]
+        self.scheduler.clear_jobs()
         self.scheduler.add_job("heartbeat", self.config.heartbeat_interval, self.send_heartbeats)
         self.scheduler.add_job("idle-timeout", max(0.1, self.config.heartbeat_interval / 2), self.evict_idle_sessions)
         self.scheduler.add_job("cache-cleanup", max(1.0, self.config.cache_ttl / 4), self.cleanup_cache)
@@ -159,15 +173,33 @@ class ChatServer:
             self.stop()
 
     def stop(self) -> None:
-        if self.stopping.is_set():
-            return
-        self.stopping.set()
-        log_event(self.logger, SERVER_SHUTDOWN)
-        if self.admin:
-            self.admin.stop()
+        with self._stop_lock:
+            if self._stop_complete.is_set():
+                return
+            if not self.stopping.is_set():
+                self.stopping.set()
+                log_event(self.logger, SERVER_SHUTDOWN)
+                try:
+                    self._shutdown_impl()
+                finally:
+                    self._stop_complete.set()
+                return
+        self._stop_complete.wait(timeout=max(self.config.shutdown_timeout * 4, 10.0))
+
+    def _shutdown_impl(self) -> None:
+        if self.admin and not self.admin.stop(self.config.shutdown_timeout):
+            log_event(self.logger, SHUTDOWN_JOIN_TIMEOUT, stage="admin")
         if self._server_socket:
             with contextlib.suppress(OSError):
                 self._server_socket.close()
+            self._server_socket = None
+        self.scheduler.stop()
+        if not self.scheduler.join(self.config.shutdown_timeout):
+            log_event(self.logger, SHUTDOWN_JOIN_TIMEOUT, stage="scheduler")
+        if self._accept_thread and self._accept_thread.is_alive() and self._accept_thread is not current_thread():
+            self._accept_thread.join(self.config.shutdown_timeout)
+            if self._accept_thread.is_alive():
+                log_event(self.logger, SHUTDOWN_JOIN_TIMEOUT, stage="accept")
         with self.lock:
             sessions = list(self.sessions.values())
         shutdown_notice = system_message("server shutting down")
@@ -177,12 +209,16 @@ class ChatServer:
             session.close(ConnectionState.SERVER_SHUTDOWN)
         for session in sessions:
             session.join(self.config.shutdown_timeout)
-        if self._accept_thread and self._accept_thread.is_alive() and self._accept_thread is not current_thread():
-            self._accept_thread.join(self.config.shutdown_timeout)
-        self.scheduler.stop()
-        self.scheduler.join(self.config.shutdown_timeout)
+            if session.reader_thread.is_alive() or session.writer_thread.is_alive():
+                log_event(
+                    self.logger,
+                    SHUTDOWN_JOIN_TIMEOUT,
+                    session_id=session.session_id,
+                    nick=session.nick,
+                )
         self.db_writer.stop(drain=True)
-        self.db_writer.join(self.config.shutdown_timeout)
+        if not self.db_writer.join(self.config.shutdown_timeout):
+            log_event(self.logger, SHUTDOWN_JOIN_TIMEOUT, stage="db_writer")
         with self.lock:
             self.sessions.clear()
             self.nicks.clear()
@@ -197,8 +233,14 @@ class ChatServer:
         (a deeply nested JSON bomb, a handler bug) is logged and answered with a
         generic error instead of killing the reader loop.
         """
+        if session.close_event.is_set():
+            return
         try:
-            message = validate_client_message(frame, handshaken=session.state == ConnectionState.ACTIVE)
+            message = validate_client_message(
+                frame,
+                handshaken=session.state == ConnectionState.ACTIVE,
+                max_message_size=self.config.max_message_size,
+            )
         except ProtocolError as exc:
             session.send_error(exc)
             self.stats.incr("rejected_messages")
@@ -210,9 +252,14 @@ class ChatServer:
             return
 
         if self.stopping.is_set():
-            session.send_error(
-                ProtocolError(ErrorCode.SERVER_SHUTTING_DOWN, "Server is shutting down", recoverable=False)
+            session.send_immediate(
+                error_frame(
+                    ErrorCode.SERVER_SHUTTING_DOWN,
+                    "Server is shutting down",
+                    recoverable=False,
+                )
             )
+            session.close(ConnectionState.SERVER_SHUTDOWN)
             return
 
         try:
@@ -232,13 +279,26 @@ class ChatServer:
             session.send_error(ProtocolError(ErrorCode.INVALID_MESSAGE, "Internal error handling message"))
             self.stats.incr("rejected_messages")
 
+    def _reject_rate_limited(self, session: ClientSession) -> None:
+        session.send_error(ProtocolError(ErrorCode.RATE_LIMITED, "Message rate limit exceeded"))
+        self.stats.incr("rate_limit_rejections")
+        self.stats.incr("rejected_messages")
+        log_event(self.logger, RATE_LIMIT_REJECT, nick=session.nick, session_id=session.session_id)
+
     def _handle_message(self, session: ClientSession, message: dict[str, Any]) -> None:
         msg_type = message["type"]
         if msg_type == "hello":
             if session.state == ConnectionState.ACTIVE:
+                if not session.rate_limiter.allow():
+                    self._reject_rate_limited(session)
+                    return
                 self.rename(session, message["nick"])
             else:
                 self.handshake(session, message["nick"])
+            return
+
+        if not session.rate_limiter.allow():
+            self._reject_rate_limited(session)
             return
 
         if msg_type == "pong":
@@ -250,13 +310,6 @@ class ChatServer:
                 session.last_ping_nonce = None
             return
 
-        if not session.rate_limiter.allow():
-            session.send_error(ProtocolError(ErrorCode.RATE_LIMITED, "Message rate limit exceeded"))
-            self.stats.incr("rate_limit_rejections")
-            self.stats.incr("rejected_messages")
-            log_event(self.logger, RATE_LIMIT_REJECT, nick=session.nick, session_id=session.session_id)
-            return
-
         if msg_type == "join":
             self.join_room(session, message["room"])
         elif msg_type == "leave":
@@ -266,8 +319,11 @@ class ChatServer:
         elif msg_type == "dm":
             self.direct_message(session, message["to"], message["body"])
         elif msg_type == "history":
-            self.send_history(session, message["room"], message["limit"])
+            limit = min(message["limit"], self.config.history_limit)
+            self.send_history(session, message["room"], limit)
         elif msg_type == "who":
+            self.send_who(session, message.get("room"))
+        elif msg_type == "presence":
             self.send_who(session, message.get("room"))
         elif msg_type == "rooms":
             self.send_rooms(session)
@@ -285,9 +341,23 @@ class ChatServer:
             session.state = ConnectionState.REJECTED
             session.send_immediate(error_frame(ErrorCode.NICK_TAKEN, "Nickname is already active", recoverable=False))
             log_event(self.logger, HANDSHAKE_REJECT, nick=nick, reason="nick_taken")
+            self.stats.incr("rejected_messages")
             session.close(ConnectionState.REJECTED)
             return
-        self.enqueue_db(DbJob("upsert_user", {"nick": nick}))
+        if not self.enqueue_db(DbJob("upsert_user", {"nick": nick})):
+            with self.lock:
+                self.nicks.pop(nick, None)
+                session.nick = None
+                session.state = ConnectionState.HANDSHAKING
+            session.send_error(
+                ProtocolError(
+                    ErrorCode.SERVER_BUSY,
+                    "Database writer backlog is full",
+                    recoverable=False,
+                )
+            )
+            self.stats.incr("rejected_messages")
+            return
         session.enqueue(welcome_frame(user_id=session.user_id, nick=nick))
         log_event(self.logger, HANDSHAKE_SUCCESS, nick=nick, session_id=session.session_id)
 
@@ -295,38 +365,84 @@ class ChatServer:
         old_nick = session.nick
         if old_nick is None:
             session.send_error(ProtocolError(ErrorCode.UNAUTHORIZED, "Handshake required"))
+            self.stats.incr("rejected_messages")
             return
+        nick_taken = False
         with self.lock:
             if new_nick in self.nicks and self.nicks[new_nick] is not session:
-                session.send_error(ProtocolError(ErrorCode.NICK_TAKEN, "Nickname is already active"))
-                return
-            self.nicks.pop(old_nick, None)
-            self.nicks[new_nick] = session
-            session.nick = new_nick
-        self.enqueue_db(DbJob("upsert_user", {"nick": new_nick}))
+                nick_taken = True
+            else:
+                self.nicks.pop(old_nick, None)
+                self.nicks[new_nick] = session
+                session.nick = new_nick
+        if nick_taken:
+            session.send_error(ProtocolError(ErrorCode.NICK_TAKEN, "Nickname is already active"))
+            self.stats.incr("rejected_messages")
+            return
+        if not self.enqueue_db(DbJob("upsert_user", {"nick": new_nick})):
+            with self.lock:
+                self.nicks.pop(new_nick, None)
+                self.nicks[old_nick] = session
+                session.nick = old_nick
+            session.send_error(ProtocolError(ErrorCode.SERVER_BUSY, "Database writer backlog is full"))
+            self.stats.incr("rejected_messages")
+            return
         session.enqueue(welcome_frame(user_id=session.user_id, nick=new_nick))
         for room in list(session.rooms):
             notice = self._room_system(room, f"{old_nick} renamed to {new_nick}")
-            self._persist_system_message(notice)
-            self.history_cache.append(room, notice)
-            self.broadcast_room(room, notice)
+            self._deliver_room_notice(room, notice)
 
     def join_room(self, session: ClientSession, room: str) -> None:
         if not session.nick:
             session.send_error(ProtocolError(ErrorCode.UNAUTHORIZED, "Handshake required"))
+            self.stats.incr("rejected_messages")
             return
         with self.lock:
-            self.rooms.join(room, session.session_id)
-            session.rooms.add(room)
+            already_joined = room in session.rooms
+            if not already_joined:
+                self.rooms.join(room, session.session_id)
+                session.rooms.add(room)
+        if already_joined:
+            session.enqueue(system_message(f"already in {room}", room=room))
+            return
+        created = self.enqueue_db(DbJob("create_room", {"room": room}))
+        recorded = self.enqueue_db(DbJob("record_join", {"nick": session.nick, "room": room}, priority=3))
+        if not created and not recorded:
+            with self.lock:
+                session.rooms.discard(room)
+                self.rooms.leave(room, session.session_id)
+            self.stats.set_gauge("active_rooms", len(self.rooms.room_names()))
+            session.send_error(
+                ProtocolError(
+                    ErrorCode.SERVER_BUSY,
+                    "Database writer backlog is full",
+                    recoverable=False,
+                )
+            )
+            self.stats.incr("rejected_messages")
+            log_event(
+                self.logger,
+                HANDLER_ERROR,
+                stage="join_audit_dropped",
+                nick=session.nick,
+                room=room,
+            )
+            return
+        if not created or not recorded:
+            log_event(
+                self.logger,
+                HANDLER_ERROR,
+                stage="join_audit_partial",
+                nick=session.nick,
+                room=room,
+                created=created,
+                recorded=recorded,
+            )
         self.stats.set_gauge("active_rooms", len(self.rooms.room_names()))
-        self.enqueue_db(DbJob("create_room", {"room": room}))
-        self.enqueue_db(DbJob("record_join", {"nick": session.nick, "room": room}, priority=3))
         log_event(self.logger, JOIN, nick=session.nick, room=room)
         self.send_history(session, room, self.config.history_limit)
         notice = self._room_system(room, f"{session.nick} joined {room}")
-        self._persist_system_message(notice)
-        self.history_cache.append(room, notice)
-        self.broadcast_room(room, notice)
+        self._deliver_room_notice(room, notice)
 
     def leave_room(self, session: ClientSession, room: str) -> None:
         with self.lock:
@@ -336,14 +452,13 @@ class ChatServer:
                 self.rooms.leave(room, session.session_id)
         if not in_room:
             session.send_error(ProtocolError(ErrorCode.ROOM_NOT_FOUND, "You are not in that room"))
+            self.stats.incr("rejected_messages")
             return
         self.stats.set_gauge("active_rooms", len(self.rooms.room_names()))
         if session.nick:
             self.enqueue_db(DbJob("record_leave", {"nick": session.nick, "room": room}, priority=3))
             notice = self._room_system(room, f"{session.nick} left {room}")
-            self._persist_system_message(notice)
-            self.history_cache.append(room, notice)
-            self.broadcast_room(room, notice)
+            self._deliver_room_notice(room, notice)
             log_event(self.logger, LEAVE, nick=session.nick, room=room)
 
     def chat(self, session: ClientSession, room: str, body: str) -> None:
@@ -393,17 +508,25 @@ class ChatServer:
         log_event(self.logger, DM_SENT, message_id=message["message_id"], sender=session.nick, recipient=target_nick)
 
     def send_history(self, session: ClientSession, room: str, limit: int) -> None:
-        # Warm the cache with a full window regardless of this request's limit,
-        # so a small /history N never under-fills the cache for later readers.
+        if room not in session.rooms:
+            session.send_error(ProtocolError(ErrorCode.ROOM_NOT_FOUND, "Join the room before requesting history"))
+            self.stats.incr("rejected_messages")
+            return
         cached = self.history_cache.get(room)
         if cached is None:
             warm_count = max(limit, self.config.room_cache_messages)
             cached = self.store.recent_room_messages(room, warm_count)
+            pending = self.db_writer.pending_room_messages(room)
+            if pending:
+                cached = HistoryCache.merge_message_lists(cached, pending)[-warm_count:]
             self.history_cache.warm(room, cached)
             self.stats.incr("cache_misses")
             self.stats.incr("cache_warmups")
             log_event(self.logger, CACHE_WARMUP, room=room, count=len(cached))
         else:
+            pending = self.db_writer.pending_room_messages(room)
+            if pending:
+                cached = HistoryCache.merge_message_lists(cached, pending)
             self.stats.incr("cache_hits")
         session.enqueue(history_frame(room=room, messages=cached[-limit:]))
 
@@ -441,6 +564,8 @@ class ChatServer:
             session.enqueue(message)
 
     def send_heartbeats(self) -> None:
+        if self.stopping.is_set():
+            return
         with self.lock:
             sessions = list(self.sessions.values())
         now = self.clock()
@@ -452,6 +577,8 @@ class ChatServer:
                 session.enqueue(ping_frame(nonce=nonce))
 
     def evict_idle_sessions(self) -> None:
+        if self.stopping.is_set():
+            return
         now = self.clock()
         with self.lock:
             sessions = list(self.sessions.values())
@@ -460,35 +587,71 @@ class ChatServer:
                 idle_for = now - max(session.last_seen, session.last_pong_at)
                 if idle_for >= self.config.idle_timeout:
                     self.stats.incr("idle_timeout_evictions")
-                    self.stats.incr("evicted_clients")
-                    self._note_eviction(session, ConnectionState.IDLE_TIMED_OUT.value)
-                    log_event(self.logger, IDLE_TIMEOUT_EVICT, nick=session.nick, session_id=session.session_id)
-                    session.close(ConnectionState.IDLE_TIMED_OUT)
+                    self._evict_with_error(
+                        session,
+                        state=ConnectionState.IDLE_TIMED_OUT,
+                        error_code=ErrorCode.IDLE_TIMED_OUT,
+                        error_message="Idle timeout",
+                        log_event_name=IDLE_TIMEOUT_EVICT,
+                    )
             elif session.state in (ConnectionState.CONNECTED, ConnectionState.HANDSHAKING):
                 # Anti-slowloris: a peer that connects but never completes the
                 # hello/welcome handshake must not hold a slot + threads forever.
                 if now - session.created_at >= self.config.handshake_timeout:
                     self.stats.incr("handshake_timeouts")
-                    self.stats.incr("evicted_clients")
-                    self._note_eviction(session, ConnectionState.HANDSHAKE_TIMED_OUT.value)
-                    log_event(self.logger, HANDSHAKE_TIMEOUT_EVICT, session_id=session.session_id)
-                    session.close(ConnectionState.HANDSHAKE_TIMED_OUT)
+                    self._evict_with_error(
+                        session,
+                        state=ConnectionState.HANDSHAKE_TIMED_OUT,
+                        error_code=ErrorCode.HANDSHAKE_TIMED_OUT,
+                        error_message="Handshake timeout",
+                        log_event_name=HANDSHAKE_TIMEOUT_EVICT,
+                    )
+
+    def _evict_with_error(
+        self,
+        session: ClientSession,
+        *,
+        state: ConnectionState,
+        error_code: ErrorCode,
+        error_message: str,
+        log_event_name: str,
+        record_db: bool = True,
+        extra_stats: tuple[str, ...] = (),
+        **log_extra: Any,
+    ) -> None:
+        for key in extra_stats:
+            self.stats.incr(key)
+        self.stats.incr("evicted_clients")
+        self._note_eviction(session, state.value)
+        if record_db:
+            self.enqueue_db(
+                DbJob(
+                    "record_eviction",
+                    {"nick": session.nick, "reason": state.value},
+                    priority=2,
+                )
+            )
+        log_event(
+            self.logger,
+            log_event_name,
+            nick=session.nick,
+            session_id=session.session_id,
+            **log_extra,
+        )
+        session.send_immediate(error_frame(error_code, error_message, recoverable=False))
+        session.close(state)
 
     def evict_slow_client(self, session: ClientSession) -> None:
         if session.close_event.is_set():
             return
-        self.stats.incr("slow_client_evictions")
-        self.stats.incr("evicted_clients")
-        self._note_eviction(session, ConnectionState.SLOW_CLIENT_EVICTED.value)
-        self.enqueue_db(
-            DbJob(
-                "record_eviction",
-                {"nick": session.nick, "reason": ConnectionState.SLOW_CLIENT_EVICTED.value},
-                priority=2,
-            )
+        self._evict_with_error(
+            session,
+            state=ConnectionState.SLOW_CLIENT_EVICTED,
+            error_code=ErrorCode.SLOW_CLIENT,
+            error_message="Outbound queue full; connection closed",
+            log_event_name=SLOW_CLIENT_EVICT,
+            extra_stats=("slow_client_evictions",),
         )
-        log_event(self.logger, SLOW_CLIENT_EVICT, nick=session.nick, session_id=session.session_id)
-        session.close(ConnectionState.SLOW_CLIENT_EVICTED)
 
     def kick(self, nick: str) -> bool:
         """Admin action: forcibly disconnect a connected user by nickname."""
@@ -496,12 +659,13 @@ class ChatServer:
             target = self.nicks.get(nick)
         if target is None:
             return False
-        self.stats.incr("evicted_clients")
-        self._note_eviction(target, ConnectionState.KICKED.value)
-        self.enqueue_db(DbJob("record_eviction", {"nick": nick, "reason": ConnectionState.KICKED.value}, priority=2))
-        log_event(self.logger, KICK, nick=nick, session_id=target.session_id)
-        target.send_immediate(error_frame(ErrorCode.UNAUTHORIZED, "Kicked by admin", recoverable=False))
-        target.close(ConnectionState.KICKED)
+        self._evict_with_error(
+            target,
+            state=ConnectionState.KICKED,
+            error_code=ErrorCode.KICKED,
+            error_message="Kicked by admin",
+            log_event_name=KICK,
+        )
         return True
 
     def _note_eviction(self, session: ClientSession, reason: str) -> None:
@@ -517,17 +681,14 @@ class ChatServer:
     def _reject_for_db_backlog(self, session: ClientSession) -> None:
         self.stats.incr("rejected_messages")
         if self.config.db_backpressure_policy == "disconnect":
-            session.send_immediate(error_frame(ErrorCode.SERVER_BUSY, "DB writer backlog is full", recoverable=False))
-            self._note_eviction(session, ConnectionState.DB_BACKLOG.value)
-            self.stats.incr("evicted_clients")
-            self.enqueue_db(
-                DbJob(
-                    "record_eviction",
-                    {"nick": session.nick, "reason": ConnectionState.DB_BACKLOG.value},
-                    priority=2,
-                )
+            self._evict_with_error(
+                session,
+                state=ConnectionState.DB_BACKLOG,
+                error_code=ErrorCode.SERVER_BUSY,
+                error_message="DB writer backlog is full",
+                log_event_name=HANDLER_ERROR,
+                stage="db_backlog_evict",
             )
-            session.close(ConnectionState.DB_BACKLOG)
         else:
             session.send_error(ProtocolError(ErrorCode.SERVER_BUSY, "DB writer backlog is full"))
 
@@ -548,21 +709,18 @@ class ChatServer:
             self.enqueue_db(DbJob("record_disconnect", {"nick": nick, "reason": reason}, priority=2))
             for room in left_rooms:
                 notice = self._room_system(room, f"{nick} left {room}")
-                self._persist_system_message(notice)
-                self.history_cache.append(room, notice)
-                self.broadcast_room(room, notice)
+                self._deliver_room_notice(room, notice)
         log_event(self.logger, DISCONNECT, nick=nick, reason=reason, session_id=session.session_id)
 
     def cleanup_cache(self) -> None:
         evicted = self.history_cache.cleanup_expired()
         if evicted:
-            self.stats.incr("cache_evictions", evicted)
             log_event(self.logger, CACHE_EVICT, count=evicted)
 
     def prune_history(self) -> None:
         # One job prunes every room known to the DB (including rooms that have
         # since gone idle), not just the rooms with live members right now.
-        self.enqueue_db(
+        self._enqueue_retention_job(
             DbJob(
                 "prune_history",
                 {"keep_count": self.config.history_retention_count},
@@ -571,12 +729,25 @@ class ChatServer:
         )
         # The audit/events table also has bounded retention so it cannot grow
         # without limit on a long-running server.
-        self.enqueue_db(
+        self._enqueue_retention_job(
             DbJob(
                 "prune_events",
                 {"keep_count": self.config.event_retention_count},
                 priority=1,
             )
+        )
+
+    def _enqueue_retention_job(self, job: DbJob) -> None:
+        if self.enqueue_db(job):
+            return
+        if self.enqueue_db(job):
+            return
+        log_event(
+            self.logger,
+            HANDLER_ERROR,
+            stage="retention_enqueue_dropped",
+            job_type=job.job_type,
+            priority=job.priority,
         )
 
     def report_stats(self) -> None:
@@ -610,7 +781,16 @@ class ChatServer:
         return self.stats.snapshot(extra)
 
     def enqueue_db(self, job: DbJob) -> bool:
-        return self.db_writer.enqueue(job)
+        ok = self.db_writer.enqueue(job)
+        if not ok and job.job_type not in ("store_message", "persist_system_message"):
+            log_event(
+                self.logger,
+                HANDLER_ERROR,
+                stage="db_enqueue_dropped",
+                job_type=job.job_type,
+                priority=job.priority,
+            )
+        return ok
 
     def _accept_loop(self) -> None:
         assert self._server_socket is not None
@@ -621,6 +801,10 @@ class ChatServer:
                 continue
             except OSError:
                 break
+            if self.stopping.is_set():
+                with contextlib.suppress(OSError):
+                    client_sock.close()
+                continue
             with self.lock:
                 full = len(self.sessions) >= self.config.max_connections
                 if not full:
@@ -631,6 +815,13 @@ class ChatServer:
             # client at capacity can never stall the whole server.
             if full:
                 self._reject_connection(client_sock, ErrorCode.SERVER_FULL, "Server connection limit reached")
+                continue
+            if self.stopping.is_set():
+                with contextlib.suppress(OSError):
+                    client_sock.close()
+                with self.lock:
+                    self.sessions.pop(session.session_id, None)
+                    self.stats.set_gauge("connected_clients", len(self.sessions))
                 continue
             log_event(self.logger, CONNECT, session_id=session.session_id, address=f"{address[0]}:{address[1]}")
             session.start()
@@ -651,19 +842,46 @@ class ChatServer:
     def _room_system(self, room: str, body: str) -> dict[str, Any]:
         return room_system_message(room=room, body=body, message_id=new_message_id())
 
-    def _persist_system_message(self, message: dict[str, Any]) -> None:
-        self.enqueue_db(DbJob("store_message", {"message": message}, priority=2))
-        self.enqueue_db(
+    def _persist_system_message(self, message: dict[str, Any]) -> bool:
+        return self.enqueue_db(
             DbJob(
-                "store_system_event",
+                "persist_system_message",
                 {
-                    "event_type": "system",
-                    "room": message.get("room"),
-                    "details": {"body": message.get("body"), "message_id": message.get("message_id")},
+                    "message": message,
+                    "event_details": {
+                        "body": message.get("body"),
+                        "message_id": message.get("message_id"),
+                    },
                 },
-                priority=1,
+                priority=2,
             )
         )
+
+    def _on_db_job_failure(self, job: DbJob) -> None:
+        if job.job_type not in ("store_message", "persist_system_message"):
+            return
+        message = job.payload.get("message")
+        if not isinstance(message, dict):
+            return
+        room = message.get("room")
+        message_id = message.get("message_id")
+        if isinstance(room, str) and isinstance(message_id, str):
+            self.history_cache.remove_message(room, message_id)
+
+    def _on_db_job_success(self, job: DbJob) -> None:
+        if job.job_type == "prune_history":
+            keep_count = job.payload.get("keep_count")
+            if isinstance(keep_count, int) and keep_count >= 1:
+                self.history_cache.apply_retention(keep_count)
+            else:
+                self.history_cache.invalidate_all()
+
+    def _deliver_room_notice(self, room: str, notice: dict[str, Any]) -> None:
+        if self._persist_system_message(notice):
+            self.history_cache.append(room, notice)
+        else:
+            log_event(self.logger, HANDLER_ERROR, stage="persist_system", room=room, message_id=notice.get("message_id"))
+        self.broadcast_room(room, notice)
 
     def pretty_snapshot(self) -> str:
         return json.dumps(self.snapshot(), indent=2, sort_keys=True, default=str)
