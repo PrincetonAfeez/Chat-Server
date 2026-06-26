@@ -1,3 +1,5 @@
+""" Clock module for the chat server library """
+
 from __future__ import annotations
 
 
