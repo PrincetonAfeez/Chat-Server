@@ -1,0 +1,30 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 9000,
+    "engine": "threaded",
+    "max_connections": 100,
+    "max_message_size": 4096,
+    "outbound_queue_size": 100,
+    "outbound_backpressure_policy": "disconnect",
+    "db_queue_size": 1000,
+    "db_backpressure_policy": "reject_chat",
+    "heartbeat_interval": 20.0,
+    "idle_timeout": 60.0,
+    "handshake_timeout": 10.0,
+    "history_limit": 50,
+    "history_retention_count": 1000,
+    "event_retention_count": 10000,
+    "room_cache_messages": 50,
+    "max_cached_rooms": 128,
+    "cache_ttl": 600.0,
+    "rate_limit_messages": 20,
+    "rate_limit_window": 5.0,
+    "stats_interval": 30.0,
+    "shutdown_timeout": 5.0,
+    "log_level": "INFO",
+    "admin_enabled": false,
+    "admin_host": "127.0.0.1",
+    "admin_port": 0
+  }
+}
