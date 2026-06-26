@@ -1,3 +1,5 @@
+""" Engines module for the chat server library """
+
 from chatserver.config import ServerConfig
 
 from .base import ServerEngine
