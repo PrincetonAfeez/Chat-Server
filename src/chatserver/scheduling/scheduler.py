@@ -1,8 +1,10 @@
+""" Scheduler module for the chat server library """
+
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Any
 
@@ -29,12 +31,19 @@ class PeriodicScheduler:
         self.tick_seconds = tick_seconds
         self.on_tick = on_tick
         self._jobs: list[ScheduledJob] = []
+        self._jobs_lock = Lock()
         self._stop = Event()
         self._thread: Thread | None = None
         self._logger = get_logger("chatserver.scheduler")
 
+    def clear_jobs(self) -> None:
+        with self._jobs_lock:
+            self._jobs.clear()
+
     def add_job(self, name: str, interval: float, callback: Callable[[], Any]) -> None:
-        self._jobs.append(ScheduledJob(name, interval, callback, self.clock() + interval))
+        with self._jobs_lock:
+            self._jobs = [job for job in self._jobs if job.name != name]
+            self._jobs.append(ScheduledJob(name, interval, callback, self.clock() + interval))
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -46,13 +55,17 @@ class PeriodicScheduler:
     def stop(self) -> None:
         self._stop.set()
 
-    def join(self, timeout: float | None = None) -> None:
-        if self._thread:
+    def join(self, timeout: float | None = None) -> bool:
+        if self._thread and self._thread.is_alive():
             self._thread.join(timeout)
+            return not self._thread.is_alive()
+        return True
 
     def run_pending(self) -> None:
         now = self.clock()
-        for job in self._jobs:
+        with self._jobs_lock:
+            jobs = list(self._jobs)
+        for job in jobs:
             if now >= job.next_run:
                 self._run_job(job)
                 job.next_run = now + job.interval
