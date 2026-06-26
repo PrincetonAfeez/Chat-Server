@@ -31,6 +31,7 @@ Safe feature demos (each spins up an ephemeral server and tears it down):
 
 ```powershell
 chatserver demo basic
+chatserver demo multi-client
 chatserver demo slow-client
 chatserver demo rate-limit
 chatserver demo idle-timeout
@@ -55,11 +56,23 @@ Live admin (serve with `--admin-port`, then query the control socket):
 ```powershell
 chatserver serve --db chat.db --admin-port 9001
 chatserver admin stats --port 9001
+chatserver admin stats --port 9001 --format table
 chatserver admin clients --port 9001
 chatserver admin queues --port 9001
 chatserver admin cache --port 9001
 chatserver admin evictions --port 9001
 chatserver admin kick --nick ada --port 9001
 chatserver admin broadcast --message "restart in 5 minutes" --port 9001
+chatserver admin rooms --port 9001
 ```
+
+Offline admin (no running server):
+
+```powershell
+chatserver admin stats --db chat.db
+chatserver admin rooms --db chat.db
+```
+
+Note: `demo basic` and `demo multi-client` both consume join auto-`history` frames
+before system notices; other safe demos may skip that step.
 
