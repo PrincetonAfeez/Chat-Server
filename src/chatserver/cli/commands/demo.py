@@ -49,7 +49,16 @@ def add_demo_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 def demo(args: argparse.Namespace) -> int:
     name = args.demo_name
     if name == "all":
-        for item in ["framing", "basic", "slow-client", "rate-limit", "db-writer", "graceful-shutdown"]:
+        for item in [
+            "framing",
+            "basic",
+            "multi-client",
+            "slow-client",
+            "rate-limit",
+            "idle-timeout",
+            "db-writer",
+            "graceful-shutdown",
+        ]:
             print(f"== demo {item} ==")
             _run_demo(item)
         return 0
@@ -61,7 +70,7 @@ def _run_demo(name: str) -> None:
     safe_demos = {
         "framing": demo_framing,
         "basic": demo_basic,
-        "multi-client": demo_basic,
+        "multi-client": demo_multi_client,
         "slow-client": demo_slow_client,
         "rate-limit": demo_rate_limit,
         "idle-timeout": demo_idle_timeout,
@@ -111,11 +120,45 @@ def demo_basic() -> None:
         _read_until(bob, "welcome")
         _send(alice, {"type": "join", "room": "general"})
         _send(bob, {"type": "join", "room": "general"})
+        _read_until(alice, "history")
+        _read_until(bob, "history")
         _read_until(alice, "system")
         _read_until(bob, "system")
         _send(alice, {"type": "chat", "room": "general", "body": "hello from demo"})
         delivered = _read_until(bob, "chat")
         print(json.dumps({"broadcast_reached_bob": delivered}, indent=2, sort_keys=True))
+        alice.close()
+        bob.close()
+
+
+def demo_multi_client() -> None:
+    """Two clients in one room — same flow as basic with explicit demo output."""
+    with _demo_server() as server:
+        alice = _client(server)
+        bob = _client(server)
+        _send(alice, {"type": "hello", "nick": "alice"})
+        _send(bob, {"type": "hello", "nick": "bob"})
+        _read_until(alice, "welcome")
+        _read_until(bob, "welcome")
+        _send(alice, {"type": "join", "room": "general"})
+        _send(bob, {"type": "join", "room": "general"})
+        _read_until(alice, "history")
+        _read_until(bob, "history")
+        _read_until(alice, "system")
+        _read_until(bob, "system")
+        _send(alice, {"type": "chat", "room": "general", "body": "hello from multi-client demo"})
+        delivered = _read_until(bob, "chat")
+        print(
+            json.dumps(
+                {
+                    "demo": "multi-client",
+                    "clients": 2,
+                    "broadcast_reached_bob": delivered["body"] == "hello from multi-client demo",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
         alice.close()
         bob.close()
 
