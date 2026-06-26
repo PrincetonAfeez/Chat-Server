@@ -1,3 +1,5 @@
+""" SQLite store for the chat server library """
+
 from __future__ import annotations
 
 import json
@@ -41,23 +43,61 @@ class SQLiteStore:
         )
 
     def store_message(self, conn: sqlite3.Connection, message: dict[str, Any]) -> None:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO messages(
-                message_id, kind, room, sender, recipient, body, server_timestamp, metadata_json
+        message_id = message.get("message_id")
+        body = message.get("body")
+        room = message.get("room")
+        server_timestamp = message.get("server_timestamp")
+        kind = message.get("kind", message.get("type", "chat"))
+        sender = message.get("sender", "system")
+        if not isinstance(message_id, str) or not isinstance(body, str):
+            raise ValueError("message requires string message_id and body")
+        if not isinstance(server_timestamp, str):
+            raise ValueError("message requires string server_timestamp")
+        if kind in ("chat", "system") and not isinstance(room, str):
+            raise ValueError("message requires string room")
+        if not isinstance(sender, str):
+            raise ValueError("message requires string sender")
+        if kind not in {"chat", "system", "dm"}:
+            raise ValueError(f"unsupported message kind: {kind!r}")
+        metadata = message.get("metadata", {})
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValueError("metadata must be a JSON object")
+        try:
+            json.dumps(metadata or {}, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("metadata must be JSON-serializable") from exc
+        try:
+            conn.execute(
+                """
+                INSERT INTO messages(
+                    message_id, kind, room, sender, recipient, body, server_timestamp, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    kind,
+                    room,
+                    sender,
+                    message.get("recipient") or message.get("to"),
+                    body,
+                    server_timestamp,
+                    json.dumps(metadata or {}, sort_keys=True),
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                message["message_id"],
-                message.get("kind", message.get("type", "chat")),
-                message.get("room"),
-                message.get("sender", "system"),
-                message.get("recipient") or message.get("to"),
-                message["body"],
-                message["server_timestamp"],
-                json.dumps(message.get("metadata", {}), sort_keys=True),
-            ),
+        except sqlite3.IntegrityError as exc:
+            if exc.args and "messages.message_id" in str(exc.args[0]):
+                raise ValueError(f"duplicate message_id: {message_id}") from exc
+            raise ValueError(f"integrity constraint failed: {exc}") from exc
+
+    def persist_system_message(self, conn: sqlite3.Connection, message: dict[str, Any], *, event_details: dict[str, Any]) -> None:
+        """Store a room/system message and its audit row in one transaction."""
+        self.store_message(conn, message)
+        self.record_event(
+            conn,
+            "system",
+            room=message.get("room"),
+            details=event_details,
         )
 
     def record_event(
@@ -131,7 +171,7 @@ class SQLiteStore:
         try:
             rows = conn.execute(
                 """
-                SELECT message_id, kind, room, sender, recipient, body, server_timestamp
+                SELECT message_id, kind, room, sender, recipient, body, server_timestamp, metadata_json
                 FROM messages
                 WHERE room = ? AND kind IN ('chat', 'system')
                 ORDER BY server_timestamp DESC, rowid DESC
@@ -154,6 +194,14 @@ class SQLiteStore:
             }
             if row["recipient"]:
                 message["recipient"] = row["recipient"]
+            metadata_raw = row["metadata_json"]
+            if metadata_raw:
+                try:
+                    metadata = json.loads(metadata_raw)
+                    if isinstance(metadata, dict) and metadata:
+                        message["metadata"] = metadata
+                except json.JSONDecodeError:
+                    pass
             messages.append(message)
         return messages
 
@@ -183,4 +231,4 @@ class SQLiteStore:
             ).fetchall()
         finally:
             conn.close()
-        return [{"room": row["name"], "messages": row["message_count"]} for row in rows]
+        return [{"room": row["name"], "message_count": row["message_count"]} for row in rows]
