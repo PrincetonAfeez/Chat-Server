@@ -1,3 +1,5 @@
+""" Observability module for the chat server library """
+
 from .logging import configure_logging, get_logger
 from .stats import ServerStats
 
