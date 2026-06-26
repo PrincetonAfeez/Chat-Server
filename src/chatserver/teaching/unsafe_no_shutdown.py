@@ -1,4 +1,4 @@
-"""Demonstrates leaked worker threads when shutdown is not explicit."""
+"""Demonstrates leaked worker threads when shutdown is not explicit """
 
 from __future__ import annotations
 
