@@ -1,3 +1,5 @@
+""" Test idle timeout """
+
 from __future__ import annotations
 
 from chatserver.config import ServerConfig
