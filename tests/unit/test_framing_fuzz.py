@@ -1,5 +1,5 @@
 """Property-based fuzzing of the frame decoder — the most security-critical
-parser, since it turns hostile bytes into structure."""
+parser, since it turns hostile bytes into structure """
 
 from __future__ import annotations
 
