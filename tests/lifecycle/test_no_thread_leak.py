@@ -1,3 +1,5 @@
+""" Test no thread leak """
+
 from __future__ import annotations
 
 import threading
