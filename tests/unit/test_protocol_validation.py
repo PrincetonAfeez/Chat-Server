@@ -1,3 +1,5 @@
+""" Test protocol validation """
+
 from __future__ import annotations
 
 import pytest
@@ -50,3 +52,41 @@ def test_rejects_newline_in_body() -> None:
 def test_accepts_normal_unicode_body() -> None:
     msg = validate_client_message('{"type":"chat","room":"general","body":"héllo 🌍"}', handshaken=True)
     assert msg["body"] == "héllo 🌍"
+
+
+def test_rejects_bool_history_limit() -> None:
+    with pytest.raises(ProtocolError) as exc:
+        validate_client_message('{"type":"history","room":"general","limit":true}', handshaken=True)
+    assert exc.value.code == ErrorCode.INVALID_MESSAGE
+
+
+def test_rejects_history_limit_out_of_range() -> None:
+    with pytest.raises(ProtocolError) as exc:
+        validate_client_message('{"type":"history","room":"general","limit":0}', handshaken=True)
+    assert exc.value.code == ErrorCode.INVALID_MESSAGE
+    with pytest.raises(ProtocolError) as exc:
+        validate_client_message('{"type":"history","room":"general","limit":201}', handshaken=True)
+    assert exc.value.code == ErrorCode.INVALID_MESSAGE
+
+
+def test_rejects_invalid_nick_on_hello() -> None:
+    with pytest.raises(ProtocolError) as exc:
+        validate_client_message('{"type":"hello","nick":"1bad"}', handshaken=False)
+    assert exc.value.code == ErrorCode.INVALID_NICK
+
+
+def test_rejects_oversized_body_for_configured_frame_cap() -> None:
+    with pytest.raises(ProtocolError) as exc:
+        validate_client_message(
+            '{"type":"chat","room":"general","body":"' + ("x" * 5000) + '"}',
+            handshaken=True,
+            max_message_size=4096,
+        )
+    assert exc.value.code == ErrorCode.INVALID_MESSAGE
+
+
+def test_rejects_long_pong_nonce() -> None:
+    nonce = "n" * 129
+    with pytest.raises(ProtocolError) as exc:
+        validate_client_message(f'{{"type":"pong","nonce":"{nonce}"}}', handshaken=True)
+    assert exc.value.code == ErrorCode.INVALID_MESSAGE
