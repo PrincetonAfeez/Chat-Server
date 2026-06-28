@@ -1,3 +1,5 @@
+""" Test handshake """
+
 from __future__ import annotations
 
 from conftest import connect_raw, read_until, running_server, send_frame
