@@ -1,3 +1,5 @@
+""" Test config validation """
+
 from __future__ import annotations
 
 import pytest
@@ -55,3 +57,18 @@ def test_allows_disabled_sentinels() -> None:
 def test_rejects_unknown_engine() -> None:
     with pytest.raises(ValueError, match="engine"):
         ServerConfig(engine="quantum")
+
+
+def test_rejects_non_loopback_admin_host_when_enabled() -> None:
+    with pytest.raises(ValueError, match="admin_host must be a loopback"):
+        ServerConfig(admin_enabled=True, admin_host="0.0.0.0")
+
+
+def test_rejects_history_limit_above_room_cache_messages() -> None:
+    with pytest.raises(ValueError, match="history_limit must be <= room_cache_messages"):
+        ServerConfig(history_limit=60, room_cache_messages=50)
+
+
+def test_rejects_history_retention_below_room_cache() -> None:
+    with pytest.raises(ValueError, match="history_retention_count must be >= room_cache_messages"):
+        ServerConfig(history_retention_count=10, room_cache_messages=50)
