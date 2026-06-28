@@ -1,3 +1,5 @@
+""" Test outbound queue """
+
 from __future__ import annotations
 
 from chatserver.queues.outbound import OutboundQueue
