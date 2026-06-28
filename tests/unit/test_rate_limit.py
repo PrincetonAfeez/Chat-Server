@@ -1,3 +1,5 @@
+""" Test rate limit """
+
 from __future__ import annotations
 
 from chatserver.scheduling.clock import ManualClock
