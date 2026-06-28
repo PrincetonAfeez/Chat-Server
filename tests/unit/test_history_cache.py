@@ -1,3 +1,5 @@
+""" Test history cache """
+
 from __future__ import annotations
 
 from chatserver.cache.history_cache import HistoryCache
@@ -24,3 +26,19 @@ def test_history_cache_ttl_eviction() -> None:
     clock.advance(6)
     assert cache.get("general") is None
     assert cache.evictions == 1
+
+
+def test_invalidate_all_forces_cache_miss() -> None:
+    cache = HistoryCache(max_rooms=4, messages_per_room=10, ttl_seconds=600.0)
+    cache.warm("general", [{"message_id": "m1", "body": "hi"}])
+    assert cache.get("general") is not None
+    cache.invalidate_all()
+    assert cache.get("general") is None
+
+
+def test_apply_retention_marks_cache_stale() -> None:
+    cache = HistoryCache(max_rooms=4, messages_per_room=10, ttl_seconds=600.0)
+    cache.warm("general", [{"message_id": f"m{i}", "body": str(i)} for i in range(8)])
+    assert cache.get("general") is not None
+    cache.apply_retention(3)
+    assert cache.get("general") is None
