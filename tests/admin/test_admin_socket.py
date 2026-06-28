@@ -1,3 +1,5 @@
+""" Test admin socket """
+
 from __future__ import annotations
 
 import socket
@@ -5,7 +7,7 @@ import time
 from typing import Any
 
 from chatserver.protocol.framing import FrameDecoder, encode_frame
-from conftest import connect_raw, running_server
+from conftest import connect_raw, read_until, running_server, send_frame
 
 
 def _admin(server, request: dict[str, Any]) -> dict[str, Any]:
@@ -55,6 +57,26 @@ def test_admin_socket_reports_stats_and_kicks(tmp_path) -> None:
 
         bad = _admin(server, {"command": "nonsense"})
         assert bad["ok"] is False
+
+
+def test_admin_kick_missing_nick_returns_false(tmp_path) -> None:
+    with running_server(tmp_path, admin_enabled=True, admin_port=0) as server:
+        result = _admin(server, {"command": "kick", "nick": "ghost"})
+        assert result["ok"] is False
+
+
+def test_admin_clients_queues_cache_rooms(tmp_path) -> None:
+    with running_server(tmp_path, admin_enabled=True, admin_port=0) as server:
+        alice = connect_raw(server, "alice")
+        send_frame(alice, {"type": "join", "room": "general"})
+        read_until(alice, "history")
+        for command in ("clients", "queues", "cache", "rooms"):
+            result = _admin(server, {"command": command})
+            assert result["ok"] is True
+            assert "result" in result
+        rooms = _admin(server, {"command": "rooms"})["result"]
+        assert isinstance(rooms, dict)
+        assert rooms.get("general") == 1
 
 
 def test_admin_broadcast_reaches_clients(tmp_path) -> None:
