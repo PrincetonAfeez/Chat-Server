@@ -1,3 +1,5 @@
+""" Test history pruning """
+
 from __future__ import annotations
 
 from chatserver.persistence.sqlite_store import SQLiteStore
