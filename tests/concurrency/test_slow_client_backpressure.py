@@ -1,3 +1,5 @@
+""" Test slow client backpressure """
+
 from __future__ import annotations
 
 import select
