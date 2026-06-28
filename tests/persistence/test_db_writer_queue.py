@@ -1,3 +1,5 @@
+""" Test db writer queue """
+
 from __future__ import annotations
 
 from chatserver.observability.stats import ServerStats
