@@ -1,7 +1,10 @@
+""" Conftest for the chat server library """
+
 from __future__ import annotations
 
 import json
 import socket
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +25,22 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         if _SLOW_DIRS & set(item.path.parts):
             item.add_marker(pytest.mark.slow)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    import threading
+    import warnings
+
+    leaked = [
+        t.name
+        for t in threading.enumerate()
+        if t.name.startswith(("chatserver-", "chatclient-")) and t.is_alive() and t is not threading.main_thread()
+    ]
+    if leaked and exitstatus == 0:
+        warnings.warn(
+            f"non-daemon threads still alive at exit: {leaked}",
+            stacklevel=1,
+        )
 
 
 @contextmanager
@@ -69,3 +88,19 @@ def read_until(sock: socket.socket, msg_type: str) -> dict[str, Any]:
             message = json.loads(frame)
             if message.get("type") == msg_type:
                 return message
+
+
+def read_system_containing(sock: socket.socket, text: str, *, timeout: float = 3.0) -> dict[str, Any]:
+    decoder = FrameDecoder(1 << 20)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        data = sock.recv(65536)
+        if not data:
+            raise AssertionError("socket closed before expected frame")
+        frames, errors = decoder.feed(data)
+        assert not errors
+        for frame in frames:
+            message = json.loads(frame)
+            if message.get("type") == "system" and text in message.get("body", ""):
+                return message
+    raise AssertionError(f"no system frame containing {text!r}")
