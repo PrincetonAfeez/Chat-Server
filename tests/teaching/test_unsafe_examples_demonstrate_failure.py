@@ -1,3 +1,5 @@
+""" Test unsafe examples demonstrate failure """
+
 from __future__ import annotations
 
 from chatserver.teaching import (
